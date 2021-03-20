@@ -1,4 +1,5 @@
 ﻿using EliteJournalReader.Events;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -19,8 +20,14 @@ namespace EliteJournalReader
     /// It reads the file as it comes in and parses it on a line by line basis.
     /// All events are fired as .NET events to be consumed by other classes.
     /// </summary>
-    public class JournalWatcher : FileSystemWatcher
+    public class JournalWatcher
     {
+
+        private readonly FileSystemWatcher fsWatcher = new FileSystemWatcher();
+
+        
+        protected string Path => fsWatcher.Path;
+        
         public const int UPDATE_INTERVAL_MILLISECONDS = 500;
 
         public event EventHandler<MessageReceivedEventArgs> MessageReceived;
@@ -150,11 +157,11 @@ namespace EliteJournalReader
         /// </summary>
         public JournalWatcher(string path)
         {
-            Filter = DefaultFilter;
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.Size;
+            fsWatcher.Filter = DefaultFilter;
+            fsWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.Size;
             try
             {
-                Path = System.IO.Path.GetFullPath(path);
+                fsWatcher.Path = System.IO.Path.GetFullPath(path);
             }
             catch (Exception ex)
             {
@@ -180,7 +187,7 @@ namespace EliteJournalReader
             long offset = -1;
             try
             {
-                var journals = Directory.GetFiles(Path, DefaultFilter).OrderByDescending(f => GetFileCreationDate(f));
+                var journals = Directory.GetFiles(fsWatcher.Path, DefaultFilter).OrderByDescending(f => GetFileCreationDate(f));
                 if (!journals.Any())
                     return 0; // there's nothing
 
@@ -195,7 +202,7 @@ namespace EliteJournalReader
                 // now process each journal
                 foreach (string filename in previousFiles)
                 {
-                    string journalFile = System.IO.Path.Combine(Path, filename);
+                    string journalFile = System.IO.Path.Combine(fsWatcher.Path, filename);
                     using (var reader = new StreamReader(new FileStream(journalFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
                     {
                         LatestJournalFile = filename;
@@ -240,15 +247,15 @@ namespace EliteJournalReader
         /// </exception>
         public virtual async Task StartWatching()
         {
-            if (EnableRaisingEvents)
+            if (fsWatcher.EnableRaisingEvents)
             {
                 // Already watching
                 return;
             }
 
-            if (!Directory.Exists(Path))
+            if (!Directory.Exists(fsWatcher.Path))
             {
-                Trace.TraceError($"Cannot watch non-existing folder {Path}.");
+                Trace.TraceError($"Cannot watch non-existing folder {fsWatcher.Path}.");
                 return;
             }
 
@@ -266,8 +273,8 @@ namespace EliteJournalReader
 
                 // because we might just have read an old log file, make sure we don't miss the new one when it arrives
                 StartPollingForNewJournal();
-                Created += async (sender, args) => await UpdateLatestJournalFile();
-                Changed += JournalWatcher_Changed;
+                fsWatcher.Created += async (sender, args) => await UpdateLatestJournalFile();
+                fsWatcher.Changed += JournalWatcher_Changed;
 
                 if (offset >= 0)
                 {
@@ -279,7 +286,7 @@ namespace EliteJournalReader
                         CheckForJournalUpdateAsync(LatestJournalFile, offset);
                 }
 
-                EnableRaisingEvents = true;
+                fsWatcher.EnableRaisingEvents = true;
             });
 
             
@@ -289,7 +296,7 @@ namespace EliteJournalReader
         {
             try
             {
-                string cargoPath = System.IO.Path.Combine(Path, "Cargo.json");
+                string cargoPath = System.IO.Path.Combine(fsWatcher.Path, "Cargo.json");
                 if (!File.Exists(cargoPath))
                     return null;
 
@@ -351,7 +358,7 @@ namespace EliteJournalReader
         {
             try
             {
-                EnableRaisingEvents = false;
+                fsWatcher.EnableRaisingEvents = false;
                 IsLive = false;
 
                 if (cancellationTokenSource != null)
@@ -401,7 +408,7 @@ namespace EliteJournalReader
                 var tuple = (Tuple<int, long, string, CancellationToken>)state;
                 int id = tuple.Item1;
                 long offset = tuple.Item2;
-                string journalFile = System.IO.Path.Combine(Path, tuple.Item3);
+                string journalFile = System.IO.Path.Combine(fsWatcher.Path, tuple.Item3);
                 var cancellationToken = tuple.Item4;
 
 #if DEBUG
@@ -526,7 +533,7 @@ namespace EliteJournalReader
         private async Task<string> UpdateLatestJournalFile()
         {
             // filenames have format: Journal.160922194205.01.log
-            string[] journals = Directory.GetFiles(Path, DefaultFilter);
+            string[] journals = Directory.GetFiles(fsWatcher.Path, DefaultFilter);
 
             // keep waiting until there is a journal, or we're being cancelled.
             while (journals.Length == 0)
@@ -534,7 +541,7 @@ namespace EliteJournalReader
                 try
                 {
                     await Task.Delay(UPDATE_INTERVAL_MILLISECONDS, cancellationTokenSource.Token);
-                    journals = Directory.GetFiles(Path, DefaultFilter);
+                    journals = Directory.GetFiles(fsWatcher.Path, DefaultFilter);
                 }
                 catch (TaskCanceledException)
                 {
@@ -543,7 +550,7 @@ namespace EliteJournalReader
             }
 
             // because the timestamp is in the filename, we can just sort by filename descending.
-            string latestJournal = Directory.GetFiles(Path, DefaultFilter).OrderByDescending(f => GetFileCreationDate(f)).FirstOrDefault();
+            string latestJournal = Directory.GetFiles(fsWatcher.Path, DefaultFilter).OrderByDescending(f => GetFileCreationDate(f)).FirstOrDefault();
 
             bool isChanged = latestJournal != null && LatestJournalFile != latestJournal;
             if (isChanged)
@@ -574,19 +581,27 @@ namespace EliteJournalReader
                 string eventType = evt.Value<string>("event");
                 if (string.IsNullOrEmpty(eventType))
                     return; // no event, nothing to do
-
+            
 #if DEBUG
                 if (IsLive)
                     Trace.TraceInformation($"Journal - firing event {eventType} @ {evt["timestamp"]?.Value<string>()}\r\n\t{line}");
 #endif
+            
+
                 var journalEventArgs = FireEvent(eventType, evt);
                 if (journalEventArgs != null)
                     MessageReceived?.Invoke(this, new MessageReceivedEventArgs(journalEventArgs, eventType));
             }
+            catch (JsonException e)
+            {
+                // lets assume JsonExceptions were from parsing and that any other exceptions came from event consumers
+                Trace.TraceError($"Exception parsing  journal event:\r\n\t{line}\r\n\t{e.GetType().FullName}: {e.Message}");
+                //fsWatcher.OnError(new ErrorEventArgs(e));
+            }
             catch (Exception e)
             {
-                Trace.TraceError($"Exception handling journal event:\r\n\t{line}\r\n\t{e.GetType().FullName}: {e.Message}");
-                OnError(new ErrorEventArgs(e));
+                Trace.TraceError($"Exception thrown by consumer of journal event:\r\n\t{line}\r\n\t{e.GetType().FullName}: {e.Message}");
+                //fsWatcher.OnError(new ErrorEventArgs(e));
             }
         }
 
