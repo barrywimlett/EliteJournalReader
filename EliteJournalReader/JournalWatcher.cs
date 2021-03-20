@@ -13,13 +13,42 @@ using System.Threading.Tasks;
 
 namespace EliteJournalReader
 {
+    public interface IJournalWatcher
+    {
+        event EventHandler<MessageReceivedEventArgs> MessageReceived;
+
+        /// <summary>
+        ///     The latest log file
+        /// </summary>
+        string LatestJournalFile { get; }
+
+        bool IsLive { get; }
+        string Path { get;  }
+
+        /// <summary>
+        ///     Starts the watching.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">
+        ///     Throws an exception if the <see cref="System.IO.Path" /> does not contain netLogs
+        ///     files.
+        /// </exception>
+        /// <exception cref="FileNotFoundException">
+        ///     The directory specified in <see cref="P:System.IO.FileSystemWatcher.Path" />
+        ///     could not be found.
+        /// </exception>
+        Task StartWatching();
+
+        void StopWatching();
+
+        TJournalEvent GetEvent<TJournalEvent>() where TJournalEvent : JournalEvent;
+    }
 
     /// <summary>
     /// File watcher and parser for the new journal feed to be introduced in Elite:Dangerous 2.2.
     /// It reads the file as it comes in and parses it on a line by line basis.
     /// All events are fired as .NET events to be consumed by other classes.
     /// </summary>
-    public class JournalWatcher : FileSystemWatcher
+    public class JournalWatcher : FileSystemWatcher, IJournalWatcher
     {
         public const int UPDATE_INTERVAL_MILLISECONDS = 500;
 
